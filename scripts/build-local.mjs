@@ -194,7 +194,9 @@ ${STYLE}
 console.log(`회차: ${nextEp}화 (${slug}) · 개입 ${steering.length}건 · 인물 ${characters.length} · Codex ${CODEX_MODEL || "default"}/${CODEX_REASONING_EFFORT}`);
 const prompt0 = buildPrompt("");
 console.log(`Prompt: ${(Buffer.byteLength(prompt0, "utf8") / 1024).toFixed(1)} KB`);
-if (DRY_RUN) { console.log("=== DRY RUN ===\n" + prompt0.slice(0, 3500) + `\n...(전체 ${prompt0.length}자)`); process.exit(0); }
+if (DRY_RUN) {
+  console.log("=== DRY RUN ===\n" + prompt0.slice(0, 3500) + `\n...(전체 ${prompt0.length}자)`);
+} else {
 
 // ── Codex 비대화식 호출 ───────────────────────────────────────
 function callCodex(promptText) {
@@ -429,3 +431,4 @@ ${entries.join("\n")}
 > **이 작품은 순수한 허구입니다.** 등장하는 인물·사무소·공모·사건은 모두 가상이며, 실존하는 특정 인물이나 단체와는 아무 관련이 없습니다. 모든 회차는 매일 AI가 자동으로 집필합니다.
 `);
 console.log(`index.md 갱신 (${files.length}회차)`);
+}
