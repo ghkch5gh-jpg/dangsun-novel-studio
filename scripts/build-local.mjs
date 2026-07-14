@@ -5,9 +5,10 @@
 // 연속성 설계 (drift 방지):
 //   - canon/timeline.md, canon/world.md, canon/characters/*.md = 🔒 락드 → append만, 덮어쓰기 없음(전언게임 차단)
 //   - canon/threads.md, state.md = 런닝 → 매 화 전체 갱신.  synopsis.md = 화당 1줄 append.
-//   - 생성 직후 '연속성 체크' 2차 claude 호출이 새 화를 락드 canon·이전 떡밥과 대조 → 하드 모순 시 1회 재생성.
+//   - 생성 직후 '연속성 체크' 2차 Codex 호출이 새 화를 락드 canon·이전 떡밥과 대조 → 하드 모순 시 1회 재생성.
 //
-//   DRY_RUN=1 : 프롬프트만   FORCE=1 : 오늘 회차 있어도 강제   CLAUDE_MODEL=opus   NO_VERIFY=1 : 연속성 체크 끔
+//   DRY_RUN=1 : 프롬프트만   FORCE=1 : 오늘 회차 있어도 강제   NO_VERIFY=1 : 연속성 체크 끔
+//   CODEX_MODEL=<선택>   CODEX_REASONING_EFFORT=low|medium|high|xhigh
 //   환경(개입용, 없으면 개입 없이): NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (.env 가능)
 
 import { readFile, writeFile, readdir, access, mkdir } from "node:fs/promises";
@@ -15,7 +16,8 @@ import { spawn } from "node:child_process";
 
 const DRY_RUN = process.env.DRY_RUN === "1";
 const NO_VERIFY = process.env.NO_VERIFY === "1";
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "opus"; // 품질 우선(캐릭터·문장 디테일). sonnet 으로 내리려면 CLAUDE_MODEL=sonnet
+const CODEX_MODEL = process.env.CODEX_MODEL || "";
+const CODEX_REASONING_EFFORT = process.env.CODEX_REASONING_EFFORT || "high";
 
 // ── .env 로더 ─────────────────────────────────────────────────
 async function loadDotEnv() {
@@ -189,21 +191,23 @@ ${STYLE}
 주의: new_characters 의 name 은 기존 인물(${characters.map((c) => c.name).join(", ")})과 겹치면 안 됨(그건 character_logs 로). 캐논 인물 정체는 절대 바꾸지 말 것.`;
 }
 
-console.log(`회차: ${nextEp}화 (${slug}) · 개입 ${steering.length}건 · 인물 ${characters.length} · 모델 ${CLAUDE_MODEL}`);
+console.log(`회차: ${nextEp}화 (${slug}) · 개입 ${steering.length}건 · 인물 ${characters.length} · Codex ${CODEX_MODEL || "default"}/${CODEX_REASONING_EFFORT}`);
 const prompt0 = buildPrompt("");
 console.log(`Prompt: ${(Buffer.byteLength(prompt0, "utf8") / 1024).toFixed(1)} KB`);
 if (DRY_RUN) { console.log("=== DRY RUN ===\n" + prompt0.slice(0, 3500) + `\n...(전체 ${prompt0.length}자)`); process.exit(0); }
 
-// ── claude 호출 ───────────────────────────────────────────────
-function callClaude(promptText) {
+// ── Codex 비대화식 호출 ───────────────────────────────────────
+function callCodex(promptText) {
   return new Promise((resolve, reject) => {
-    const args = ["-p", "--output-format", "text", "--allowedTools", "", "--model", CLAUDE_MODEL];
-    const child = spawn("claude", args, { stdio: ["pipe", "pipe", "inherit"], shell: true });
+    const args = ["exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "-c", `model_reasoning_effort=${CODEX_REASONING_EFFORT}`];
+    if (CODEX_MODEL) args.push("--model", CODEX_MODEL);
+    args.push("-");
+    const child = spawn(process.platform === "win32" ? "codex.cmd" : "codex", args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
     let out = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error("타임아웃 12분")); }, 12 * 60 * 1000);
     child.stdout.on("data", (d) => (out += d.toString()));
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (c) => { clearTimeout(timer); c === 0 ? resolve(out) : reject(new Error(`claude exit ${c}`)); });
+    child.on("close", (c) => { clearTimeout(timer); c === 0 ? resolve(out) : reject(new Error(`codex exit ${c}`)); });
     child.stdin.write(promptText); child.stdin.end();
   });
 }
@@ -230,7 +234,7 @@ async function verify(body, threadsNew) {
 # 출력
 { "contradictions": [ {"type":"timeline|character|item|thread|world","detail":"무엇이 어떻게 모순인지","severity":"hard|soft"} ], "ok": true 또는 false(하드 있으면 false) }`;
   let raw;
-  try { raw = await callClaude(vPrompt); } catch (e) { console.warn(`연속성 체크 호출 실패: ${e.message} — 통과 처리`); return { contradictions: [], ok: true }; }
+  try { raw = await callCodex(vPrompt); } catch (e) { console.warn(`연속성 체크 호출 실패: ${e.message} — 통과 처리`); return { contradictions: [], ok: true }; }
   const v = parseJson(raw, "검증");
   if (!v) return { contradictions: [], ok: true };
   return { contradictions: Array.isArray(v.contradictions) ? v.contradictions : [], ok: v.ok !== false };
@@ -254,7 +258,7 @@ async function funScore(body) {
 { "hook":n, "cider":n, "cliff":n, "pace":n, "distinct":n, "verdict": "pass" 또는 "weak", "fix": "약하면 다음 시도에 줄 구체 처방 1~2줄, 좋으면 빈 문자열" }
 판정: hook<3 또는 cider<3 또는 distinct<3 또는 합계<16 이면 "weak".`;
   let raw;
-  try { raw = await callClaude(fPrompt); } catch (e) { console.warn(`재미 채점 호출 실패: ${e.message} — 통과 처리`); return { ok: true, scores: {}, fix: "" }; }
+  try { raw = await callCodex(fPrompt); } catch (e) { console.warn(`재미 채점 호출 실패: ${e.message} — 통과 처리`); return { ok: true, scores: {}, fix: "" }; }
   const f = parseJson(raw, "재미");
   if (!f) return { ok: true, scores: {}, fix: "" };
   const s = { hook: +f.hook || 0, cider: +f.cider || 0, cliff: +f.cliff || 0, pace: +f.pace || 0, distinct: +f.distinct || 0 };
@@ -287,7 +291,7 @@ for (let attempt = 0; attempt < 2; attempt++) {
     retryNote = hardNotes.join("\n");
   }
   console.log(attempt === 0 ? "생성 호출..." : "재생성(모순/재미/문체 보강)...");
-  const raw = await callClaude(buildPrompt(retryNote));
+  const raw = await callCodex(buildPrompt(retryNote));
   const d = parseJson(raw, "생성");
   if (!d || !d.body_md || String(d.body_md).trim().length < 400) { console.error("본문 부실 — 재시도"); continue; }
   const body = String(d.body_md).trim();

@@ -6,7 +6,8 @@
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "opus";
+const CODEX_MODEL = process.env.CODEX_MODEL || "";
+const CODEX_REASONING_EFFORT = process.env.CODEX_REASONING_EFFORT || "high";
 const LAST = parseInt(process.env.REVIEW_LAST || "10", 10);
 const readSafe = async (p) => { try { return await readFile(p, "utf8"); } catch { return ""; } };
 const bodyOf = (md) => { const m = md.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/); return (m ? m[1] : md).replace(/<\/?div[^>]*>/g, "").trim(); };
@@ -84,9 +85,12 @@ ${episodes.join("\n\n---\n\n")}
 (생성기에 바로 먹일 명령형 지침 5~8개. 짧고 실행가능하게. 예: "흉터 묘사 반복 금지", "이정민에게 능동적 행동 1개 부여", "정오 사건을 다음 화에서 터뜨려라")
 - `;
 
-function callClaude(p) {
+function callCodex(p) {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "text", "--allowedTools", "", "--model", CLAUDE_MODEL], { stdio: ["pipe", "pipe", "inherit"], shell: true });
+    const args = ["exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "-c", `model_reasoning_effort=${CODEX_REASONING_EFFORT}`];
+    if (CODEX_MODEL) args.push("--model", CODEX_MODEL);
+    args.push("-");
+    const child = spawn(process.platform === "win32" ? "codex.cmd" : "codex", args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
     let out = ""; const t = setTimeout(() => { child.kill(); reject(new Error("타임아웃")); }, 5 * 60 * 1000);
     child.stdout.on("data", (d) => (out += d));
     child.on("error", (e) => { clearTimeout(t); reject(e); });
@@ -95,8 +99,8 @@ function callClaude(p) {
   });
 }
 
-console.log(`리뷰: 최근 ${recent.length}화 (${total}/100) · ${CLAUDE_MODEL}`);
-const raw = (await callClaude(prompt)).trim();
+console.log(`리뷰: 최근 ${recent.length}화 (${total}/100) · Codex ${CODEX_MODEL || "default"}/${CODEX_REASONING_EFFORT}`);
+const raw = (await callCodex(prompt)).trim();
 const md = raw.replace(/^```(?:markdown)?\s*|\s*```$/g, "");
 const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
 await writeFile("review.md", `# 편집 리뷰 — ${total}화 시점 (${stamp} UTC, 최근 ${recent.length}화 기준)\n\n${md}\n`);
